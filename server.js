@@ -30,6 +30,19 @@ const route = (method, path, fn) =>
 const WINDOW_MS = Math.max(1000, Number(process.env.VERDICT_WINDOW_HOURS || 12) * 3600000);
 const windowLabel = WINDOW_MS >= 3600000 ? `${Math.round(WINDOW_MS / 3600000)} hours` : `${Math.round(WINDOW_MS / 1000)} seconds`;
 
+// Turn a failed SERV call into a message that says what to fix.
+function servFailure(res, err, tail = "") {
+  console.error(err);
+  if (err.code === "NO_KEY") return fail(res, 503, "The server has no SERV API key. Add SERV_API_KEY and restart.");
+  const status = err.status;
+  const upstream = String(err.error?.message || err.message || "").replace(/\s+/g, " ").slice(0, 240);
+  if (status === 401 || status === 403) return fail(res, 502, `SERV rejected the API key (${status}). Check SERV_API_KEY. ${upstream}`);
+  if (status === 402) return fail(res, 502, `The SERV account is out of credit. ${upstream}`);
+  if (status === 429) return fail(res, 502, `SERV is rate limiting requests or the balance is too low. ${upstream}`);
+  if (status) return fail(res, 502, `SERV answered ${status}: ${upstream}${tail}`);
+  fail(res, 502, `The reasoning service could not be reached: ${upstream}${tail}`);
+}
+
 function roleOf(deal, t) {
   if (t && t === deal.payer.token) return "payer";
   if (t && t === deal.payee.token) return "payee";
@@ -124,9 +137,7 @@ route("post", "/api/deals", async (req, res) => {
     if (!data.conditions.length) return fail(res, 422, "The terms did not contain anything checkable. Say what must be delivered.");
     deal.contract = { ...data, meta };
   } catch (err) {
-    console.error(err);
-    if (err.code === "NO_KEY") return fail(res, 503, "The server has no SERV API key. Add SERV_API_KEY to .env and restart.");
-    return fail(res, 502, "The reasoning service did not answer. Try again in a moment.");
+    return servFailure(res, err);
   }
   log(deal, `${payerName} wrote the deal.`);
   await store.save(deal);
@@ -224,10 +235,9 @@ async function runJudge(deal, res, role, { effort, appeal }) {
     }
     (await store.save(deal), res.json({ deal: view(deal, role) }));
   } catch (err) {
-    console.error(err);
     if (err instanceof EscrowError) return fail(res, 409, err.message);
-    if (err.code === "NO_KEY") return fail(res, 503, "The server has no SERV API key. Add SERV_API_KEY to .env and restart.");
-    fail(res, 502, "The reasoning service did not answer. Nothing was paid. Try again.");
+    if (err instanceof StorageError) return fail(res, 503, err.message);
+    servFailure(res, err, " Nothing was paid.");
   } finally {
     if (deal.appealing) {
       deal.appealing = false;
