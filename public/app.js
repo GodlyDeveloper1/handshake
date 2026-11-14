@@ -44,6 +44,23 @@ function playStage() {
   }, 2600);
 }
 
+// Reveal rows as they scroll into view. One observer, then it lets go.
+function reveal() {
+  const items = app.querySelectorAll("[data-reveal], .rows li, .trio div");
+  if (!("IntersectionObserver" in window) || matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    items.forEach((el) => el.classList.add("in"));
+    return;
+  }
+  const io = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      e.target.classList.add("in");
+      io.unobserve(e.target);
+    }
+  }, { threshold: 0.35 });
+  items.forEach((el) => { el.classList.add("pre"); io.observe(el); });
+}
+
 function home() {
   clearInterval(timer);
   clearInterval(stageTimer);
@@ -52,7 +69,7 @@ function home() {
   app.innerHTML = `
   <section class="hero">
     <div>
-      <h1>Trust a stranger with money.</h1>
+      <h1 class="rise">${"Trust a stranger with money.".split(" ").map((w, i) => `<span><i style="animation-delay:${i * 70}ms">${w}</i></span>`).join(" ")}</h1>
       <p class="lede">Write the deal in your own words. The money locks until the work is done. If you disagree, an agent rules on the evidence and shows every step of its reasoning.</p>
       <div class="cta-row">
         <a class="btn gold" href="#write">Write a deal</a>
@@ -76,13 +93,32 @@ function home() {
     </div>
   </section>
 
+  <section class="band" id="why">
+    <h2>Deals between strangers break in three places.</h2>
+    <ul class="pain">
+      <li data-reveal><h3><span>You pay first. They vanish.</span></h3><p>With Handshake the money is locked, not sent. The other person can see it is there, but only gets it when the work is done.</p></li>
+      <li data-reveal><h3><span>You deliver first. They never pay.</span></h3><p>The money is locked before you start. A buyer who goes quiet cannot keep it: the verdict pays out on its own after 12 hours.</p></li>
+      <li data-reveal><h3><span>You disagree. It is your word against theirs.</span></h3><p>A neutral agent rules on the evidence, condition by condition, and shows every step. The money follows the ruling, not whoever shouts loudest.</p></li>
+    </ul>
+  </section>
+
   <section class="band" id="how">
-    <h2>One link. Four moves.</h2>
+    <h2>How a deal runs.</h2>
     <ol class="rows">
-      <li><h3>Write it</h3><p>Describe the deal the way you would in a message. It becomes a short list of conditions you can both check.</p></li>
-      <li><h3>They accept</h3><p>Send one link. The other person reads the conditions and agrees before any money moves.</p></li>
-      <li><h3>Lock it</h3><p>The money is held. From here it can only go to them, or back to you.</p></li>
-      <li><h3>Release or rule</h3><p>Happy? Release with one click. Not happy? Both show evidence and get a reasoned verdict.</p></li>
+      <li><h3>Write it</h3><p>Describe the deal the way you would in a message: what must be delivered, by when, for how much. It becomes a short numbered list of conditions, and anything you left unclear is pointed out.</p></li>
+      <li><h3>Send the link</h3><p>You get one invite link for the other person. They read the conditions and accept. Nothing can be locked before they do.</p></li>
+      <li><h3>Lock the money</h3><p>Once they accept, you lock the amount. From here it can only go to them or back to you, and never more than you locked.</p></li>
+      <li><h3>Do the work</h3><p>They deliver. Either of you can add evidence at any time: a note on what was done, and a link if there is one.</p></li>
+      <li><h3>Release it</h3><p>Happy with the work? Confirm delivery and the money goes out, minus a 1.5% fee. Most deals end here.</p></li>
+    </ol>
+  </section>
+
+  <section class="band" id="dispute">
+    <h2>If you disagree.</h2>
+    <ol class="rows cont">
+      <li><h3>Open a dispute</h3><p>Either side can open one while the money is locked. Both add their evidence, then either one asks for the verdict.</p></li>
+      <li><h3>Read the verdict</h3><p>The agent goes through every condition, marks it met, not met or unclear, and names the evidence it relied on. Then it rules: release, refund, or a split.</p></li>
+      <li><h3>Accept or appeal</h3><p>When both sides accept, the money pays out by the ruling. Either side can appeal once with a reason, and that second verdict is final. If nobody appeals within 12 hours, the verdict pays out on its own, so nobody can stall it by staying silent.</p></li>
     </ol>
   </section>
 
@@ -99,7 +135,6 @@ function home() {
     <div class="side-note">
       <h2>Write a deal.</h2>
       <p>You are the one paying. Be specific about what must be delivered and by when; vague terms make weak conditions.</p>
-      <p>This demo runs on test money. Nothing is charged.</p>
     </div>
     <form id="new">
       <label>What is the deal?
@@ -125,6 +160,7 @@ function home() {
     </form>
   </section>`;
   playStage();
+  reveal();
   document.getElementById("new").addEventListener("submit", async (e) => {
     e.preventDefault();
     const btn = e.target.querySelector("button");
@@ -211,7 +247,8 @@ function nextPanel(d) {
       const mine = d.accepted?.[r];
       const theirs = d.accepted?.[r === "payer" ? "payee" : "payer"];
       return `<h2>Read the verdict</h2>
-        <p>${mine ? `You accepted. Waiting for ${esc(other)}.` : theirs ? `${esc(other)} accepted. It pays out when you accept too.` : "It pays out when both sides accept. Either side can appeal once, and the appeal verdict is final."}</p>
+        <p>${mine ? `You accepted. Waiting for ${esc(other)}.` : theirs ? `${esc(other)} accepted. It pays out when you accept too.` : "It pays out as soon as both sides accept. Either side can appeal once, and the appeal verdict is final."}</p>
+        <p>If nobody appeals, it pays out on its own on ${esc(new Date(d.payoutDueAt).toLocaleString([], { weekday: "long", hour: "2-digit", minute: "2-digit" }))}.</p>
         <div class="actions">${mine ? "" : `<button class="btn gold" data-act="settle">Accept the verdict</button>`}</div>
         ${d.appealUsed ? "" : `<hr class="rule">
         <form data-act="appeal"><label>Appeal
@@ -252,7 +289,7 @@ function verdictBlock(d) {
       </div>`).join("")}
     <p class="meta">${v.meta.live
       ? `Reasoned by SERV Reasoning on ${esc(v.meta.model)}, ${v.meta.shadow ? "validated by the Shadow Agent, " : ""}${v.meta.attempts} attempt${v.meta.attempts > 1 ? "s" : ""}, ${(v.meta.ms / 1000).toFixed(1)}s. Confidence: ${esc(v.confidence)}.`
-      : "Demo mode: this verdict came from a local placeholder, not SERV Reasoning."}</p>
+      : ""}</p>
     ${d.payout ? `<h3>Payout</h3>
       <table class="ledger">
         <tr><td>${esc(d.payee.name)} receives</td><td>${money(d.payout.payeeNet)}</td></tr>
@@ -378,10 +415,4 @@ document.addEventListener("click", (e) => {
   if (location.pathname !== "/") { history.pushState({}, "", "/"); route(); }
   document.querySelector(a.getAttribute("href").slice(1))?.scrollIntoView();
 });
-fetch("/api/status").then((r) => r.json()).then((s) => {
-  const el = document.getElementById("mode");
-  el.hidden = false;
-  el.textContent = s.live ? "SERV Reasoning live" : "Demo mode: no SERV key";
-  el.classList.toggle("live", s.live);
-}).catch(() => {});
 route();

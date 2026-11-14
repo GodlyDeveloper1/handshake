@@ -1,4 +1,4 @@
-// End-to-end check against a running server in demo mode (no SERV key).
+// End-to-end check against a running server started with HANDSHAKE_STUB=1.
 // Usage: node test/flow.test.js [baseUrl]
 import assert from "node:assert/strict";
 import { openSession, pay, settle, EscrowError } from "../lib/escrow.js";
@@ -93,5 +93,28 @@ const call = async (path, token, body) => {
   assert.equal(ap.deal.status, "judged_final");
   assert.ok(ap.deal.payout);
   assert.equal(ap.deal.appealUsed, true);
+}
+// Automatic payout when nobody appeals (runs only when the server has a short window)
+{
+  const { windowMs } = await call("/status");
+  if (windowMs <= 5000) {
+    const made = await call("/deals", null, { title: "Silent payer", payerName: "A", payeeName: "B", amount: 80, terms: "B translates a 2 page document into French." });
+    const id = made.deal.id, payer = made.token, payee = made.deal.inviteToken;
+    await call(`/deals/${id}/accept`, payee, {});
+    await call(`/deals/${id}/fund`, payer, {});
+    await call(`/deals/${id}/evidence`, payee, { text: "Translation delivered by email." });
+    await call(`/deals/${id}/dispute`, payee, {});
+    const j = await call(`/deals/${id}/judge`, payee, {});
+    assert.equal(j.deal.status, "judged");
+    assert.ok(j.deal.payoutDueAt > Date.now());
+    await new Promise((r) => setTimeout(r, windowMs + 400));
+    const later = await call(`/deals/${id}`, payee);
+    assert.equal(later.deal.status, "judged_final", "pays out without the payer's click");
+    assert.equal(later.deal.payout.payeeNet + later.deal.payout.fee + later.deal.payout.payerBack, 8000);
+    assert.equal((await call(`/deals/${id}/appeal`, payer, { text: "late" })).status, 409, "no appeal after payout");
+    console.log("Automatic payout check passed.");
+  } else {
+    console.log("Automatic payout check skipped (start the server with a short VERDICT_WINDOW_HOURS to run it).");
+  }
 }
 console.log("All checks passed.");

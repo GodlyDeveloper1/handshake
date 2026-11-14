@@ -73,7 +73,8 @@ a { color: inherit; }
 .rows { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); counter-reset: r; }
 .rows li { counter-increment: r; display: grid; grid-template-columns: 3.2rem minmax(0, 1.1fr) minmax(0, 1fr); gap: 20px; align-items: center; padding: clamp(20px, 2.6vw, 34px) 0; border-bottom: 1px solid var(--line); }
 .rows li::before { content: counter(r); font: 400 .9rem/1 var(--mono); color: var(--smoke); }
-.rows p { margin: 0; color: var(--ash); max-width: 40ch; }
+.rows.cont { counter-reset: r 5; }
+.rows p { margin: 0; color: var(--ash); max-width: 44ch; }
 .rows li:hover h3 { color: var(--gold); }
 .trio { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--line); }
 .trio div { padding: 30px 30px 10px 0; }
@@ -192,4 +193,42 @@ textarea { min-height: 140px; resize: vertical; }
   html { scroll-behavior: auto; }
   .pot.shake .sum { animation: none; }
   .slip .row, .seal { transition: none; }
+}
+
+/* The problem: each failure gets struck out as its fix appears */
+.pain { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+.pain li { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: clamp(20px, 5vw, 80px); align-items: center; padding: clamp(26px, 3.4vw, 48px) 0; border-bottom: 1px solid var(--line); }
+.pain h3 { font-size: clamp(1.7rem, 3.6vw, 3.1rem); line-height: 1.02; }
+.pain h3 span { background: linear-gradient(var(--gold), var(--gold)) no-repeat 0 54% / 0% .11em; -webkit-box-decoration-break: clone; box-decoration-break: clone; transition: background-size .9s cubic-bezier(.6, 0, .2, 1) .25s, color .5s ease .9s; }
+.pain li.in h3 span { background-size: 100% .11em; color: var(--smoke); }
+.pain p { margin: 0; color: var(--bone); max-width: 40ch; opacity: 0; transform: translateX(-14px); transition: opacity .6s ease 1s, transform .6s ease 1s; }
+.pain li.in p { opacity: 1; transform: none; }
+
+/* Motion */
+.rise span { display: inline-block; overflow: hidden; vertical-align: top; padding-bottom: .12em; margin-bottom: -.12em; }
+.rise i { display: inline-block; font-style: normal; transform: translateY(105%); animation: rise .8s cubic-bezier(.2, .8, .2, 1) forwards; }
+@keyframes rise { to { transform: none; } }
+.hero .lede, .hero .cta-row, .hero .slip { opacity: 0; animation: settle .7s ease .45s forwards; }
+.hero .cta-row { animation-delay: .58s; }
+.hero .slip { animation: drop .9s cubic-bezier(.2, 1.2, .3, 1) .3s forwards; transform-origin: top center; }
+@keyframes settle { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+@keyframes drop { from { opacity: 0; transform: translateY(-30px) rotate(-3deg); } to { opacity: 1; transform: none; } }
+.rows li.pre, .trio div.pre { opacity: 0; transform: translateY(18px); }
+.rows li.pre.in, .trio div.pre.in { opacity: 1; transform: none; transition: opacity .6s ease, transform .6s cubic-bezier(.2, .8, .2, 1); }
+.trio div.pre:nth-child(2).in { transition-delay: .12s; }
+.trio div.pre:nth-child(3).in { transition-delay: .24s; }
+.rows li h3 { transition: color .2s ease, transform .3s cubic-bezier(.2, .8, .2, 1); }
+.rows li:hover h3 { transform: translateX(10px); }
+.btn { transition: background-color .15s ease, transform .15s ease; }
+.btn:active { transform: scale(.97); }
+.bar-split i:last-child { animation: grow 1s cubic-bezier(.3, 1, .3, 1) both; transform-origin: right; }
+@keyframes grow { from { transform: scaleX(0); } }
+.ruling .pct { animation: settle .6s ease both; }
+.finding { animation: settle .5s ease both; }
+.finding:nth-of-type(2) { animation-delay: .1s; } .finding:nth-of-type(3) { animation-delay: .2s; }
+.finding:nth-of-type(4) { animation-delay: .3s; } .finding:nth-of-type(5) { animation-delay: .4s; }
+@media (max-width: 900px) { .pain li { grid-template-columns: 1fr; gap: 14px; } }
+@media (prefers-reduced-motion: reduce) {
+  .rise i, .hero .lede, .hero .cta-row, .hero .slip, .ruling .pct, .finding, .bar-split i:last-child { animation: none; opacity: 1; transform: none; }
+  .pain h3 span, .pain p, .rows li h3 { transition: none; }
 }

@@ -3,7 +3,7 @@ import express from "express";
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { store } from "./lib/store.js";
+import { store, StorageError } from "./lib/store.js";
 import { openSession, settle, EscrowError, FEE_BPS } from "./lib/escrow.js";
 import { compileContract, judge } from "./lib/judge.js";
 import { LIVE, MODEL } from "./lib/serv.js";
@@ -16,7 +16,19 @@ app.use(express.static(path.join(here, "public")));
 const token = () => crypto.randomBytes(16).toString("hex");
 const clean = (s, max) => String(s ?? "").trim().slice(0, max);
 const fail = (res, code, message) => res.status(code).json({ error: message });
-const busy = new Set();
+// Async route wrapper: a thrown error becomes a clean response, never a hung request.
+const route = (method, path, fn) =>
+  app[method](path, (req, res) =>
+    Promise.resolve(fn(req, res)).catch((err) => {
+      console.error(err);
+      if (res.headersSent) return;
+      if (err instanceof StorageError) return fail(res, 503, err.message);
+      fail(res, 500, "Something went wrong on the server. Try again.");
+    })
+  );
+// After a verdict, the money pays out on its own once this window passes with no appeal.
+const WINDOW_MS = Math.max(1000, Number(process.env.VERDICT_WINDOW_HOURS || 12) * 3600000);
+const windowLabel = WINDOW_MS >= 3600000 ? `${Math.round(WINDOW_MS / 3600000)} hours` : `${Math.round(WINDOW_MS / 1000)} seconds`;
 
 function roleOf(deal, t) {
   if (t && t === deal.payer.token) return "payer";
@@ -45,6 +57,7 @@ function view(deal, role) {
       expiresAt: session.expiresAt, closed: session.closed, ledger: session.ledger,
     },
     role,
+    payoutDueAt: deal.status === "judged" ? deal.verdict.at + WINDOW_MS : null,
     live: LIVE,
     feeBps: FEE_BPS,
   };
@@ -52,9 +65,10 @@ function view(deal, role) {
   return out;
 }
 
-function load(req, res) {
-  const deal = store.get(req.params.id);
+async function load(req, res) {
+  const deal = await store.get(req.params.id);
   if (!deal) return fail(res, 404, "No deal with that link."), {};
+  await finalizeIfDue(deal);
   return { deal, role: roleOf(deal, req.get("x-deal-token")) };
 }
 
@@ -64,9 +78,30 @@ function payout(deal, payeePercent, memo) {
   deal.seal = seal(deal);
 }
 
-app.get("/api/status", (_req, res) => res.json({ live: LIVE, model: LIVE ? MODEL : null, feeBps: FEE_BPS }));
+// A verdict nobody appealed in time is carried out without anyone's click,
+// so a party who lost cannot stall the payout by staying silent.
+async function finalizeIfDue(deal) {
+  if (deal.status !== "judged" || deal.appealing) return;
+  if (Date.now() < deal.verdict.at + WINDOW_MS) return;
+  try {
+    payout(deal, deal.verdict.payee_percent, "appeal window passed");
+  } catch (err) {
+    console.error(err);
+    return;
+  }
+  deal.status = "judged_final";
+  deal.verdict.final = true;
+  log(deal, `No appeal within ${windowLabel}. Money paid out.`);
+  await store.save(deal);
+}
+// A long-running server also sweeps on a timer. Serverless hosts finalize when the deal is next opened.
+if (store.all && !process.env.VERCEL) {
+  setInterval(() => store.all().forEach((d) => finalizeIfDue(d).catch(console.error)), 30000).unref();
+}
 
-app.post("/api/deals", async (req, res) => {
+route("get", "/api/status", async (_req, res) => res.json({ live: LIVE, model: LIVE ? MODEL : null, feeBps: FEE_BPS, windowMs: WINDOW_MS }));
+
+route("post", "/api/deals", async (req, res) => {
   const title = clean(req.body.title, 120);
   const terms = clean(req.body.terms, 4000);
   const payerName = clean(req.body.payerName, 60);
@@ -77,7 +112,7 @@ app.post("/api/deals", async (req, res) => {
   const deal = {
     id: crypto.randomBytes(5).toString("hex"),
     createdAt: Date.now(),
-    title, terms, amount, currency: "USD (test)",
+    title, terms, amount, currency: "USD",
     payer: { name: payerName, token: token() },
     payee: { name: payeeName, token: token() },
     status: "awaiting_payee",
@@ -90,41 +125,42 @@ app.post("/api/deals", async (req, res) => {
     deal.contract = { ...data, meta };
   } catch (err) {
     console.error(err);
+    if (err.code === "NO_KEY") return fail(res, 503, "The server has no SERV API key. Add SERV_API_KEY to .env and restart.");
     return fail(res, 502, "The reasoning service did not answer. Try again in a moment.");
   }
   log(deal, `${payerName} wrote the deal.`);
-  store.save(deal);
+  await store.save(deal);
   res.json({ deal: view(deal, "payer"), token: deal.payer.token });
 });
 
-app.get("/api/deals/:id", (req, res) => {
-  const { deal, role } = load(req, res);
+route("get", "/api/deals/:id", async (req, res) => {
+  const { deal, role } = await load(req, res);
   if (deal) res.json({ deal: view(deal, role) });
 });
 
-app.post("/api/deals/:id/accept", (req, res) => {
-  const { deal, role } = load(req, res);
+route("post", "/api/deals/:id/accept", async (req, res) => {
+  const { deal, role } = await load(req, res);
   if (!deal) return;
   if (role !== "payee") return fail(res, 403, "Only the payee can accept this deal.");
   if (deal.status !== "awaiting_payee") return fail(res, 409, "This deal was already accepted.");
   deal.status = "awaiting_funds";
   log(deal, `${deal.payee.name} accepted the conditions.`);
-  res.json({ deal: view(store.save(deal), role) });
+  (await store.save(deal), res.json({ deal: view(deal, role) }));
 });
 
-app.post("/api/deals/:id/fund", (req, res) => {
-  const { deal, role } = load(req, res);
+route("post", "/api/deals/:id/fund", async (req, res) => {
+  const { deal, role } = await load(req, res);
   if (!deal) return;
   if (role !== "payer") return fail(res, 403, "Only the payer can lock the money.");
   if (deal.status !== "awaiting_funds") return fail(res, 409, "The money can be locked once the payee has accepted, and only once.");
   deal.session = openSession({ amount: deal.amount, payerId: "payer", payeeId: "payee" });
   deal.status = "locked";
   log(deal, `${deal.payer.name} locked ${deal.amount / 100} ${deal.currency}.`);
-  res.json({ deal: view(store.save(deal), role) });
+  (await store.save(deal), res.json({ deal: view(deal, role) }));
 });
 
-app.post("/api/deals/:id/evidence", (req, res) => {
-  const { deal, role } = load(req, res);
+route("post", "/api/deals/:id/evidence", async (req, res) => {
+  const { deal, role } = await load(req, res);
   if (!deal) return;
   if (!role) return fail(res, 403, "Only the two parties can add evidence.");
   if (!["locked", "disputed"].includes(deal.status)) return fail(res, 409, "Evidence can be added while the money is locked.");
@@ -135,12 +171,12 @@ app.post("/api/deals/:id/evidence", (req, res) => {
   if (deal.evidence.filter((e) => e.role === role).length >= 8) return fail(res, 409, "Each side can add up to 8 pieces of evidence.");
   deal.evidence.push({ id: `e${deal.evidence.length + 1}`, role, text, url, at: Date.now() });
   log(deal, `${deal[role].name} added evidence.`);
-  res.json({ deal: view(store.save(deal), role) });
+  (await store.save(deal), res.json({ deal: view(deal, role) }));
 });
 
 // Happy path: the payer confirms delivery and the money goes out. No AI needed.
-app.post("/api/deals/:id/release", (req, res) => {
-  const { deal, role } = load(req, res);
+route("post", "/api/deals/:id/release", async (req, res) => {
+  const { deal, role } = await load(req, res);
   if (!deal) return;
   if (role !== "payer") return fail(res, 403, "Only the payer can release the money.");
   if (!["locked", "disputed"].includes(deal.status)) return fail(res, 409, "There is no locked money to release.");
@@ -151,29 +187,28 @@ app.post("/api/deals/:id/release", (req, res) => {
   }
   deal.status = "released";
   log(deal, `${deal.payer.name} confirmed delivery. Money released.`);
-  res.json({ deal: view(store.save(deal), role) });
+  (await store.save(deal), res.json({ deal: view(deal, role) }));
 });
 
-app.post("/api/deals/:id/dispute", (req, res) => {
-  const { deal, role } = load(req, res);
+route("post", "/api/deals/:id/dispute", async (req, res) => {
+  const { deal, role } = await load(req, res);
   if (!deal) return;
   if (!role) return fail(res, 403, "Only the two parties can open a dispute.");
   if (deal.status !== "locked") return fail(res, 409, "A dispute can be opened while the money is locked.");
   deal.status = "disputed";
   log(deal, `${deal[role].name} opened a dispute.`);
-  res.json({ deal: view(store.save(deal), role) });
+  (await store.save(deal), res.json({ deal: view(deal, role) }));
 });
 
 async function runJudge(deal, res, role, { effort, appeal }) {
-  if (busy.has(deal.id)) return fail(res, 409, "A verdict is already being worked out.");
-  busy.add(deal.id);
+  if (!(await store.lock(deal.id))) return fail(res, 409, "A verdict is already being worked out.");
   try {
     const result = await judge(deal, { effort });
     if (!result.ok) {
       deal.status = "escalated";
       deal.escalation = { reason: result.reason, meta: result.meta };
       log(deal, "The verdict failed its checks twice. Money stays locked for human review.");
-      return res.json({ deal: view(store.save(deal), role) });
+      return (await store.save(deal), res.json({ deal: view(deal, role) }));
     }
     if (appeal) {
       deal.firstVerdict = deal.verdict;
@@ -181,32 +216,38 @@ async function runJudge(deal, res, role, { effort, appeal }) {
     }
     deal.verdict = { ...result.verdict, meta: result.meta, at: Date.now(), final: Boolean(appeal) };
     deal.status = appeal ? "judged_final" : "judged";
-    log(deal, appeal ? "Appeal verdict issued. It is final." : "Verdict issued. Either side can appeal once.");
+    log(deal, appeal ? "Appeal verdict issued. It is final." : `Verdict issued. It pays out in ${windowLabel} unless someone appeals.`);
     if (appeal) {
       payout(deal, deal.verdict.payee_percent, "appeal verdict");
       log(deal, "Money paid out.");
+      deal.appealing = false;
     }
-    res.json({ deal: view(store.save(deal), role) });
+    (await store.save(deal), res.json({ deal: view(deal, role) }));
   } catch (err) {
     console.error(err);
     if (err instanceof EscrowError) return fail(res, 409, err.message);
+    if (err.code === "NO_KEY") return fail(res, 503, "The server has no SERV API key. Add SERV_API_KEY to .env and restart.");
     fail(res, 502, "The reasoning service did not answer. Nothing was paid. Try again.");
   } finally {
-    busy.delete(deal.id);
+    if (deal.appealing) {
+      deal.appealing = false;
+      await store.save(deal).catch(console.error);
+    }
+    await store.unlock(deal.id).catch(console.error);
   }
 }
 
-app.post("/api/deals/:id/judge", (req, res) => {
-  const { deal, role } = load(req, res);
+route("post", "/api/deals/:id/judge", async (req, res) => {
+  const { deal, role } = await load(req, res);
   if (!deal) return;
   if (!role) return fail(res, 403, "Only the two parties can ask for a verdict.");
   if (deal.status !== "disputed") return fail(res, 409, "Open a dispute before asking for a verdict.");
-  runJudge(deal, res, role, { effort: "medium", appeal: false });
+  await runJudge(deal, res, role, { effort: "medium", appeal: false });
 });
 
 // Accepting a verdict pays it out. Both sides see the reasoning first.
-app.post("/api/deals/:id/settle", (req, res) => {
-  const { deal, role } = load(req, res);
+route("post", "/api/deals/:id/settle", async (req, res) => {
+  const { deal, role } = await load(req, res);
   if (!deal) return;
   if (!role) return fail(res, 403, "Only the two parties can settle.");
   if (deal.status !== "judged") return fail(res, 409, "There is no open verdict to settle.");
@@ -223,11 +264,11 @@ app.post("/api/deals/:id/settle", (req, res) => {
     deal.verdict.final = true;
     log(deal, "Money paid out.");
   }
-  res.json({ deal: view(store.save(deal), role) });
+  (await store.save(deal), res.json({ deal: view(deal, role) }));
 });
 
-app.post("/api/deals/:id/appeal", (req, res) => {
-  const { deal, role } = load(req, res);
+route("post", "/api/deals/:id/appeal", async (req, res) => {
+  const { deal, role } = await load(req, res);
   if (!deal) return;
   if (!role) return fail(res, 403, "Only the two parties can appeal.");
   if (deal.status !== "judged" || deal.appealUsed) return fail(res, 409, "This deal has no appeal left.");
@@ -235,10 +276,15 @@ app.post("/api/deals/:id/appeal", (req, res) => {
   if (!text) return fail(res, 400, "Say what the verdict got wrong.");
   deal.evidence.push({ id: `e${deal.evidence.length + 1}`, role, text: `Appeal: ${text}`, url: "", at: Date.now() });
   log(deal, `${deal[role].name} appealed.`);
-  runJudge(deal, res, role, { effort: "high", appeal: true });
+  deal.appealing = true; // holds off the automatic payout while the appeal is judged
+  await store.save(deal);
+  await runJudge(deal, res, role, { effort: "high", appeal: true });
 });
 
 app.get("*", (_req, res) => res.sendFile(path.join(here, "public", "index.html")));
 
+// On Vercel the app is imported by api/index.js and never listens itself.
 const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`Handshake on http://localhost:${port} (${LIVE ? "SERV live, " + MODEL : "demo mode, no SERV key"})`));
+if (!process.env.VERCEL) app.listen(port, () => console.log(`Handshake on http://localhost:${port} (${LIVE ? "SERV live, " + MODEL : "no SERV_API_KEY set"})`));
+
+export default app;

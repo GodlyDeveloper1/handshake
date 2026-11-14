@@ -4,6 +4,9 @@
 
 **Track:** Open (switch to Kite only if the escrow session is wired to Kite Passport before submitting)
 
+**The problem**
+Deals between strangers online break in three places: the buyer pays and the seller vanishes, the seller delivers and the buyer never pays, or they disagree and it is one word against the other.
+
 **What it does**
 Handshake is a deal link that lets two strangers trust each other with money. One person writes a deal in plain words and locks the payment. If the work is delivered, they release it with one click. If they disagree, both sides submit evidence and an agent rules on it, condition by condition, showing the evidence it relied on for every step. The money then pays out by that ruling.
 
