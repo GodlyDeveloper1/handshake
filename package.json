@@ -1,0 +1,16 @@
+{
+  "name": "handshake",
+  "version": "0.1.0",
+  "description": "Escrow with a brain: a deal link any two strangers can trust. Verdicts by SERV Reasoning.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/flow.test.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "express": "^4.21.0",
+    "openai": "^4.77.0"
+  }
+}
